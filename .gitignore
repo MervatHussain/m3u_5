@@ -1,0 +1,22 @@
+# Credentials
+.env
+configs/
+
+# M3U files (large, not needed in repo)
+files/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# PyInstaller
+dist/
+build/
+*.spec
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
