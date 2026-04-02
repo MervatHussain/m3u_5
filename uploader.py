@@ -38,7 +38,6 @@ class M3UUploader:
     def __init__(self):
         self.api_url = API_URL
         self.headers = {'x-api-key': X_API_KEY}
-        logger.info(f"Using API: {self.api_url}")
 
     def upload_file(self, local_path, last_updated_by_id=LAST_UPDATED_BY_ID):
         local_path = Path(local_path)
