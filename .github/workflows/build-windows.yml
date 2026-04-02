@@ -23,9 +23,15 @@ jobs:
         run: |
           pip install boto3 psycopg2-binary python-decouple python-dotenv pyinstaller
 
+      - name: Create configs
+        run: |
+          mkdir configs
+          echo "${{ secrets.ENV_FILE }}" > configs/.env
+          echo "${{ secrets.PRODUCTION_ENV_FILE }}" > configs/production.env
+
       - name: Build EXE
         run: |
-          pyinstaller --onefile uploader.py
+          pyinstaller --onefile --add-data "configs;configs" uploader.py
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4

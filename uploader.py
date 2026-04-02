@@ -16,10 +16,10 @@ from psycopg2.extras import RealDictCursor
 ORIGINAL_DIR = Path(os.getcwd())
 if getattr(sys, 'frozen', False):
     SCRIPT_DIR = Path(sys.executable).parent
+    CONFIGS_DIR = Path(sys._MEIPASS) / 'configs'
 else:
     SCRIPT_DIR = Path(__file__).parent
-
-CONFIGS_DIR = SCRIPT_DIR / 'configs'
+    CONFIGS_DIR = SCRIPT_DIR / 'configs'
 
 load_dotenv(str(CONFIGS_DIR / '.env'))
 load_dotenv(str(CONFIGS_DIR / f'{env_config("DEV_ENV", "staging")}.env'))
