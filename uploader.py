@@ -1,25 +1,20 @@
 import os
 import sys
-import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 
-import boto3
-import psycopg2
-from botocore.exceptions import ClientError
+import requests
 from decouple import config as env_config
 from dotenv import load_dotenv
-from psycopg2.extras import RealDictCursor
 
 # Resolve configs/ folder relative to this script or exe
 ORIGINAL_DIR = Path(os.getcwd())
 if getattr(sys, 'frozen', False):
     SCRIPT_DIR = Path(sys.executable).parent
-    CONFIGS_DIR = Path(sys._MEIPASS) / 'configs'
 else:
     SCRIPT_DIR = Path(__file__).parent
-    CONFIGS_DIR = SCRIPT_DIR / 'configs'
+
+CONFIGS_DIR = SCRIPT_DIR / 'configs'
 
 load_dotenv(str(CONFIGS_DIR / '.env'))
 load_dotenv(str(CONFIGS_DIR / f'{env_config("DEV_ENV", "staging")}.env'))
@@ -34,192 +29,48 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {'.m3u', '.m3u8', '.txt'}
 
-
-class ConfigurationManager:
-    def __init__(self):
-        self.secret_dict_db = {}
-        # Use DB env vars directly if available, otherwise fetch from Secrets Manager
-        if os.getenv('DB_HOST'):
-            self.secret_dict_db = {
-                'dbname': os.getenv('DB_NAME'),
-                'host': os.getenv('DB_HOST'),
-                'port': os.getenv('DB_PORT', '5432'),
-                'username': os.getenv('DB_USER'),
-                'password': os.getenv('DB_PASSWORD'),
-            }
-        else:
-            profile = os.getenv('AWS_PROFILE')
-            session = boto3.session.Session(profile_name=profile) if profile else boto3.session.Session()
-            client = session.client(
-                service_name='secretsmanager',
-                region_name=os.getenv('REGION_NAME', 'us-east-1'),
-            )
-            secret_db = client.get_secret_value(SecretId=os.getenv('DB_SECRET'))
-            self.secret_dict_db = json.loads(secret_db['SecretString'])
-
-    @property
-    def master_db(self):
-        return self.secret_dict_db['dbname']
-
-    @property
-    def database_host(self):
-        return self.secret_dict_db['host']
-
-    @property
-    def database_port(self):
-        return self.secret_dict_db['port']
-
-    @property
-    def database_username(self):
-        return self.secret_dict_db['username']
-
-    @property
-    def database_password(self):
-        return self.secret_dict_db['password']
-
-    @property
-    def aws_access_key_id(self):
-        return os.getenv('AWS_ACCESS_KEY_ID')
-
-    @property
-    def aws_secret_access_key(self):
-        return os.getenv('AWS_SECRET_ACCESS_KEY')
-
-    @property
-    def aws_session_token(self):
-        return os.getenv('AWS_SESSION_TOKEN')
-
-    @property
-    def aws_region(self):
-        return os.getenv('AWS_S3_REGION_NAME', 'us-east-1')
-
-    @property
-    def aws_bucket_name(self):
-        return os.getenv('AWS_BUCKET_NAME', 'rh5-livestreaming-us-east-1')
-
-    @property
-    def aws_folder(self):
-        return os.getenv('AWS_FOLDER', 'public/uploads/m3u/')
+API_URL = os.getenv('API_URL', 'https://api-v1.rightshero.com/api/v1/links_management/live_streaming/m3u/files')
+X_API_KEY = os.getenv('X_API_KEY', '')
+LAST_UPDATED_BY_ID = int(os.getenv('LAST_UPDATED_BY_ID', '1'))
 
 
 class M3UUploader:
     def __init__(self):
-        self.config = ConfigurationManager()
-        profile = os.getenv('AWS_PROFILE')
-        if profile:
-            session = boto3.Session(profile_name=profile, region_name=self.config.aws_region)
-        elif self.config.aws_access_key_id:
-            session = boto3.Session(
-                aws_access_key_id=self.config.aws_access_key_id,
-                aws_secret_access_key=self.config.aws_secret_access_key,
-                aws_session_token=self.config.aws_session_token,
-                region_name=self.config.aws_region,
-            )
-        else:
-            session = boto3.Session(region_name=self.config.aws_region)
-        self.s3_client = session.client('s3')
-        self._validate_aws_connection()
+        self.api_url = API_URL
+        self.headers = {'x-api-key': X_API_KEY}
+        logger.info(f"Using API: {self.api_url}")
 
-    def _validate_aws_connection(self):
-        try:
-            self.s3_client.head_bucket(Bucket=self.config.aws_bucket_name)
-            logger.info(f"Connected to S3 bucket: {self.config.aws_bucket_name}")
-        except ClientError as e:
-            logger.error(f"Failed AWS connection: {e}")
-            raise
-
-    def _get_db_connection(self):
-        return psycopg2.connect(
-            host=self.config.database_host,
-            port=self.config.database_port,
-            dbname=self.config.master_db,
-            user=self.config.database_username,
-            password=self.config.database_password,
-            cursor_factory=RealDictCursor
-        )
-
-    def _file_exists_in_db(self, file_path):
-        conn = self._get_db_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SET search_path TO live_streaming_db;")
-            cursor.execute("SELECT id FROM m3u_files WHERE file_path=%s LIMIT 1", (file_path,))
-            return cursor.fetchone() is not None
-        finally:
-            cursor.close()
-            conn.close()
-
-    def _file_exists_in_s3(self, file_path):
-        try:
-            self.s3_client.head_object(Bucket=self.config.aws_bucket_name, Key=file_path)
-            return True
-        except ClientError as e:
-            if e.response['Error']['Code'] == '404':
-                return False
-            else:
-                logger.error(f"S3 check error: {e}")
-                raise
-
-    def _upload_to_s3(self, local_path, s3_path):
-        self.s3_client.upload_file(local_path, self.config.aws_bucket_name, s3_path)
-        logger.info(f"Uploaded {local_path} -> S3: {s3_path}")
-
-    def _insert_to_db(self, s3_path, local_path, last_updated_by_id=1):
-        conn = self._get_db_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SET search_path TO live_streaming_db;")
-            file_type = local_path.suffix[1:]
-            cursor.execute(
-                """
-                INSERT INTO m3u_files (file_path, file_type, last_updated_by_id, created_at)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id
-                """,
-                (s3_path, file_type, last_updated_by_id, datetime.now(timezone.utc))
-            )
-            conn.commit()
-            file_id = cursor.fetchone()['id']
-            logger.info(f"DB record created: {s3_path} (ID: {file_id})")
-            return file_id
-        finally:
-            cursor.close()
-            conn.close()
-
-    def upload_file(self, local_path, last_updated_by_id=1):
+    def upload_file(self, local_path, last_updated_by_id=LAST_UPDATED_BY_ID):
         local_path = Path(local_path)
         if not local_path.exists() or not local_path.is_file():
             logger.warning(f"Skipping, not a file: {local_path}")
             return None
 
-        today = datetime.now(timezone.utc)
-        date_prefix = today.strftime("%Y/%m/%d")
-        s3_path = f"{self.config.aws_folder}{date_prefix}/{local_path.name}"
-        file_id = None
+        file_type = local_path.suffix[1:]
 
-        if self._file_exists_in_db(s3_path):
-            logger.info(f"[SKIP] Already in DB: {s3_path}")
-            conn = self._get_db_connection()
+        with open(local_path, 'rb') as f:
+            files = {'file_path_0': (local_path.name, f, 'application/octet-stream')}
+            data = {
+                'file_type_0': file_type,
+                'last_updated_by_id_0': str(last_updated_by_id),
+            }
             try:
-                cursor = conn.cursor()
-                cursor.execute("SET search_path TO live_streaming_db;")
-                cursor.execute("SELECT id FROM m3u_files WHERE file_path=%s LIMIT 1", (s3_path,))
-                file_id = cursor.fetchone()['id']
-            finally:
-                cursor.close()
-                conn.close()
-                return {'id': file_id, 'url': f"https://{self.config.aws_bucket_name}.s3.{self.config.aws_region}.amazonaws.com/{s3_path}"}
+                response = requests.post(self.api_url, headers=self.headers, files=files, data=data, timeout=60)
+                if response.status_code in (200, 201):
+                    result = response.json()
+                    logger.info(f"Uploaded: {local_path.name} -> {result}")
+                    return result
+                elif response.status_code == 409:
+                    logger.info(f"[SKIP] Already exists: {local_path.name}")
+                    return None
+                else:
+                    logger.error(f"Failed {local_path.name}: {response.status_code} {response.text}")
+                    return None
+            except Exception as e:
+                logger.error(f"Error uploading {local_path.name}: {e}")
+                return None
 
-        if self._file_exists_in_s3(s3_path):
-            logger.info(f"[S3] File exists in S3 but not in DB, inserting: {s3_path}")
-            file_id = self._insert_to_db(s3_path, local_path, last_updated_by_id)
-            return {'id': file_id, 'url': f"https://{self.config.aws_bucket_name}.s3.{self.config.aws_region}.amazonaws.com/{s3_path}"}
-
-        self._upload_to_s3(local_path, s3_path)
-        file_id = self._insert_to_db(s3_path, local_path, last_updated_by_id)
-        return {'id': file_id, 'url': f"https://{self.config.aws_bucket_name}.s3.{self.config.aws_region}.amazonaws.com/{s3_path}"}
-
-    def upload_folder(self, folder_path, last_updated_by_id=1):
+    def upload_folder(self, folder_path, last_updated_by_id=LAST_UPDATED_BY_ID):
         folder = Path(folder_path)
         if not folder.exists() or not folder.is_dir():
             logger.error(f"Folder does not exist: {folder}")
