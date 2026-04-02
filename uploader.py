@@ -37,19 +37,25 @@ SUPPORTED_EXTENSIONS = {'.m3u', '.m3u8', '.txt'}
 
 class ConfigurationManager:
     def __init__(self):
-        session = boto3.session.Session()
-        client = session.client(
-            service_name='secretsmanager',
-            region_name=os.getenv('REGION_NAME', 'us-east-1'),
-        )
-        secret_db = client.get_secret_value(SecretId=os.getenv('DB_SECRET'))
-        self.secret_dict_db = json.loads(secret_db['SecretString'])
-
-        apis_secret_id = os.getenv('APIS_SECRET')
-        self.secret_dict_apis = {}
-        if apis_secret_id:
-            secret_apis = client.get_secret_value(SecretId=apis_secret_id)
-            self.secret_dict_apis = json.loads(secret_apis['SecretString'])
+        self.secret_dict_db = {}
+        # Use DB env vars directly if available, otherwise fetch from Secrets Manager
+        if os.getenv('DB_HOST'):
+            self.secret_dict_db = {
+                'dbname': os.getenv('DB_NAME'),
+                'host': os.getenv('DB_HOST'),
+                'port': os.getenv('DB_PORT', '5432'),
+                'username': os.getenv('DB_USER'),
+                'password': os.getenv('DB_PASSWORD'),
+            }
+        else:
+            profile = os.getenv('AWS_PROFILE')
+            session = boto3.session.Session(profile_name=profile) if profile else boto3.session.Session()
+            client = session.client(
+                service_name='secretsmanager',
+                region_name=os.getenv('REGION_NAME', 'us-east-1'),
+            )
+            secret_db = client.get_secret_value(SecretId=os.getenv('DB_SECRET'))
+            self.secret_dict_db = json.loads(secret_db['SecretString'])
 
     @property
     def master_db(self):
@@ -99,13 +105,19 @@ class ConfigurationManager:
 class M3UUploader:
     def __init__(self):
         self.config = ConfigurationManager()
-        self.s3_client = boto3.client(
-            's3',
-            aws_access_key_id=self.config.aws_access_key_id,
-            aws_secret_access_key=self.config.aws_secret_access_key,
-            aws_session_token=self.config.aws_session_token,
-            region_name=self.config.aws_region,
-        )
+        profile = os.getenv('AWS_PROFILE')
+        if profile:
+            session = boto3.Session(profile_name=profile, region_name=self.config.aws_region)
+        elif self.config.aws_access_key_id:
+            session = boto3.Session(
+                aws_access_key_id=self.config.aws_access_key_id,
+                aws_secret_access_key=self.config.aws_secret_access_key,
+                aws_session_token=self.config.aws_session_token,
+                region_name=self.config.aws_region,
+            )
+        else:
+            session = boto3.Session(region_name=self.config.aws_region)
+        self.s3_client = session.client('s3')
         self._validate_aws_connection()
 
     def _validate_aws_connection(self):
