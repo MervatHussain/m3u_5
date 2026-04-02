@@ -130,7 +130,7 @@ class M3UUploader:
         conn = self._get_db_connection()
         try:
             cursor = conn.cursor()
-            # cursor.execute("SET search_path TO live_streaming_db;")
+            cursor.execute("SET search_path TO live_streaming_db;")
             cursor.execute("SELECT id FROM m3u_files WHERE file_path=%s LIMIT 1", (file_path,))
             return cursor.fetchone() is not None
         finally:
@@ -160,11 +160,11 @@ class M3UUploader:
             file_type = local_path.suffix[1:]
             cursor.execute(
                 """
-                INSERT INTO m3u_files (file_path, file_type, last_updated_by_id, created_at, is_skipped)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO m3u_files (file_path, file_type, last_updated_by_id, created_at)
+                VALUES (%s, %s, %s, %s)
                 RETURNING id
                 """,
-                (s3_path, file_type, last_updated_by_id, datetime.now(timezone.utc), False)
+                (s3_path, file_type, last_updated_by_id, datetime.now(timezone.utc))
             )
             conn.commit()
             file_id = cursor.fetchone()['id']
