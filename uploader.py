@@ -59,7 +59,7 @@ class M3UUploader:
                     result = response.json()
                     logger.info(f"Uploaded: {local_path.name} -> {result}")
                     return result
-                elif response.status_code == 409:
+                elif response.status_code == 409 or 'duplicate key' in response.text:
                     logger.info(f"[SKIP] Already exists: {local_path.name}")
                     return None
                 else:
