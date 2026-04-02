@@ -156,7 +156,7 @@ class M3UUploader:
         conn = self._get_db_connection()
         try:
             cursor = conn.cursor()
-            # cursor.execute("SET search_path TO live_streaming_db;")
+            cursor.execute("SET search_path TO live_streaming_db;")
             file_type = local_path.suffix[1:]
             cursor.execute(
                 """
@@ -190,7 +190,7 @@ class M3UUploader:
             conn = self._get_db_connection()
             try:
                 cursor = conn.cursor()
-                # cursor.execute("SET search_path TO live_streaming_db;")
+                cursor.execute("SET search_path TO live_streaming_db;")
                 cursor.execute("SELECT id FROM m3u_files WHERE file_path=%s LIMIT 1", (s3_path,))
                 file_id = cursor.fetchone()['id']
             finally:
